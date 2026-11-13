@@ -1,0 +1,4 @@
+.env
+docker/.env
+.git
+__pycache__

@@ -1,0 +1,17 @@
+# Explicit project name so compose doesn't derive one from the parent directory.
+name: nowshowing
+
+services:
+  nowshowing:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: nowshowing
+    image: nowshowing
+    restart: always
+    # Container always listens on 8077; host port is configurable via docker/.env.
+    ports:
+      - "${NOWSHOWING_PORT:-8077}:8077"
+    # SONARR_URL/_KEY, RADARR_URL/_KEY (and RADARR_<NAME>_URL/_KEY for more instances),
+    # TZ, SITE_TITLE, REQUEST_URL, DAYS_AHEAD, DAYS_BACK. See README.
+    env_file: .env
