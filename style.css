@@ -36,7 +36,13 @@ nav label { cursor: pointer; user-select: none; }
 .tabs { display: flex; gap: 22px; }
 .tabs label { font-size: 18px; font-weight: 600; color: var(--muted); padding-bottom: 4px; border-bottom: 2px solid transparent; }
 .tabs label span { font-size: 12px; font-weight: 500; background: var(--panel); border: 1px solid var(--line); border-radius: 99px; padding: 1px 7px; margin-left: 4px; vertical-align: 2px; }
-.filters { display: flex; background: var(--panel); border: 1px solid var(--line); border-radius: 99px; padding: 3px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.seg { display: flex; background: var(--panel); border: 1px solid var(--line); border-radius: 99px; padding: 3px; }
+.win { display: none; }
+.js .win { display: flex; }
+.win button { font: inherit; font-size: 13px; padding: 4px 12px; border: 0; border-radius: 99px; background: none; color: var(--muted); cursor: pointer; }
+.win button[aria-pressed="true"] { background: var(--line); color: var(--text); }
+.win button:focus-visible { outline: 2px solid var(--accent); }
 .filters label { font-size: 13px; padding: 4px 12px; border-radius: 99px; color: var(--muted); }
 
 #t-rec:checked ~ nav label[for="t-rec"], #t-up:checked ~ nav label[for="t-up"] { color: var(--text); border-color: var(--accent); }
@@ -46,7 +52,7 @@ nav label { cursor: pointer; user-select: none; }
 .pane { display: none; }
 #t-rec:checked ~ .pane.rec, #t-up:checked ~ .pane.up { display: block; }
 #f-movie:checked ~ .pane .tile.tv, #f-tv:checked ~ .pane .tile.movie { display: none; }
-#f-movie:checked ~ .pane .day:not(:has(.tile.movie)), #f-tv:checked ~ .pane .day:not(:has(.tile.tv)) { display: none; }
+#f-movie:checked ~ .pane .day:not(:has(.tile.movie:not([hidden]))), #f-tv:checked ~ .pane .day:not(:has(.tile.tv:not([hidden])))) { display: none; }
 
 .day h2 { font-size: 15px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--accent); margin: 26px 0 12px; }
 .day h2 small { color: var(--muted); font-weight: 400; letter-spacing: 0; text-transform: none; margin-left: 8px; font-size: 13px; }
@@ -146,3 +152,5 @@ dialog .close { position: sticky; float: right; top: 8px; margin: 8px 8px 0 0; z
 .lblink:hover { text-decoration: underline; }
 .lbline { margin-top: 14px !important; color: var(--muted); }
 .lbline a { color: var(--lb); text-decoration: none; }
+
+[hidden] { display: none !important; }

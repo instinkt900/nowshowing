@@ -39,8 +39,13 @@ def load_dotenv(path=".env"):
 load_dotenv()
 
 TZ = ZoneInfo(os.environ.get("TZ_NAME") or os.environ.get("TZ") or "Australia/Melbourne")
-DAYS_AHEAD = int(os.environ.get("DAYS_AHEAD", "14"))
-DAYS_BACK = int(os.environ.get("DAYS_BACK", "14"))
+# Time windows the viewer can pick (days back for "Just added", days ahead for "Coming up").
+# The server always fetches the largest; the browser hides what is outside the chosen one.
+WINDOWS = sorted({int(w) for w in os.environ.get("WINDOWS", "7,14,30").split(",") if w.strip()})
+DEFAULT_DAYS = int(os.environ.get("DEFAULT_DAYS", "14"))
+if DEFAULT_DAYS not in WINDOWS:
+    DEFAULT_DAYS = WINDOWS[len(WINDOWS) // 2]
+DAYS_AHEAD = DAYS_BACK = WINDOWS[-1]
 REFRESH_MINUTES = int(os.environ.get("REFRESH_MINUTES", "15"))
 PORT = int(os.environ.get("PORT", "8077"))
 TITLE = os.environ.get("SITE_TITLE", "Now Showing")
@@ -372,7 +377,7 @@ def day_label(d, today):
         return "Tomorrow"
     if 1 < delta < 7:
         return d.strftime("%A")
-    return "Next " + d.strftime("%A") if delta < 14 else d.strftime("%A")
+    return "Next " + d.strftime("%A") if delta < 14 else d.strftime("%a %-d %b")
 
 
 def ago_bucket(d, today):
@@ -383,7 +388,9 @@ def ago_bucket(d, today):
         return "Yesterday"
     if delta < 7:
         return "This week"
-    return "Last week" if delta < 14 else "Earlier"
+    if delta < 14:
+        return "Last week"
+    return "Two weeks ago" if delta < 21 else "Three weeks ago" if delta < 28 else "A month ago"
 
 
 def badges_for(it, mode):
@@ -497,8 +504,9 @@ def review_html(lb, who):
             f'<a class="lblink" href="{e(lb["link"])}" target="_blank" rel="noopener">Read on Letterboxd ↗</a>')
 
 
-def tile(it, *, mode):
+def tile(it, *, mode, days):
     kind, title = it["kind"], it["title"] or "?"
+    hide = " hidden" if it["_d"] >= days else ""
     if kind == "movie":
         sub = str(it.get("year") or "")
         meta = it["release"] if mode == "up" else (fmt_runtime(it["runtime"]) if it.get("runtime") else "")
@@ -522,12 +530,28 @@ def tile(it, *, mode):
         ept = rating_html(it["lb"], "stars inline") + ept
     cls = f"tile {kind} {'row' if mode == 'up' else 'card'}"
     chip = "Movie" if kind == "movie" else "TV"
-    return f"""<article class="{cls}" tabindex="0" role="button" aria-haspopup="dialog">
+    return f"""<article class="{cls}" data-d="{it['_d']}"{hide} tabindex="0" role="button" aria-haspopup="dialog">
   <div class="poster"><div class="ph">{e(title)}</div>{img_html(it)}<div class="badges">{badge_html(badges_for(it, mode))}</div>
     {rating_html(it.get("lb"), "stars onposter") if mode != "up" else ""}<span class="kind-chip">{chip}</span></div>
   <div class="cap"><h3>{e(title)}</h3><div class="sub">{e(sub)}</div>{ept}<div class="meta">{e(meta)}</div></div>
   <template>{detail(it, mode)}</template>
 </article>"""
+
+
+def split_by_week(items, today):
+    """A show's episodes over the whole fetch window -> one tile per week section they arrived in,
+    so a 7-day view of a show counts only that week's episodes."""
+    out = []
+    for it in items:
+        if it["kind"] != "tv":
+            out.append(it)
+            continue
+        parts = {}
+        for r in it["episodes"]:
+            parts.setdefault(ago_bucket(r["imported"].date(), today), []).append(r)
+        for eps in parts.values():
+            out.append({**it, "episodes": eps, "when": max(r["imported"] for r in eps)})
+    return sorted(out, key=lambda x: x["when"], reverse=True)
 
 
 def grouped(items, label_fn):
@@ -538,6 +562,29 @@ def grouped(items, label_fn):
 
 
 JS = """
+// time window: show tiles whose distance (data-d, in days) fits, hide empty sections, update counts
+const main = document.querySelector('main');
+function setWindow(w, save) {
+  main.querySelectorAll('.tile').forEach(t => t.hidden = +t.dataset.d >= w);
+  main.querySelectorAll('.pane').forEach(p => {
+    p.querySelectorAll('.day').forEach(s => s.hidden = !s.querySelector('.tile:not([hidden])'));
+    const none = p.querySelector('.none'); if (none) none.hidden = !!p.querySelector('.tile:not([hidden])');
+  });
+  main.querySelectorAll('[data-count]').forEach(c => c.textContent =
+    main.querySelectorAll(`.pane.${c.dataset.count} .tile:not([hidden])`).length);
+  main.querySelectorAll('.win button').forEach(b => b.setAttribute('aria-pressed', +b.dataset.w === w));
+  main.querySelectorAll('.wlabel').forEach(x => x.textContent = w);
+  if (save) {
+    try { localStorage.setItem('days', w); } catch (e) {}
+    const u = new URL(location); u.searchParams.set('days', w); history.replaceState(null, '', u);
+  }
+}
+document.documentElement.classList.add('js');
+main.addEventListener('click', ev => { const b = ev.target.closest('.win button'); if (b) setWindow(+b.dataset.w, true); });
+if (!new URL(location).searchParams.has('days')) {
+  let saved = null; try { saved = +localStorage.getItem('days'); } catch (e) {}
+  if (saved && main.querySelector(`.win button[data-w="${saved}"]`)) setWindow(saved, false);
+}
 const dlg = document.getElementById('dlg'), body = dlg.querySelector('.dbody');
 function open(t) { body.replaceChildren(t.querySelector('template').content.cloneNode(true)); dlg.showModal(); dlg.scrollTop = 0; }
 document.addEventListener('click', ev => { const t = ev.target.closest('.tile'); if (t) open(t); });
@@ -551,32 +598,49 @@ dlg.addEventListener('click', ev => {
 """
 
 
-def render(data):
+def render(data, days=DEFAULT_DAYS):
     today = datetime.now(TZ).date()
     if data is None:
         body = '<p class="empty">Loading… refresh in a few seconds.</p>'
         updated = "never"
     else:
+        for it in data["upcoming"]:
+            it["_d"] = max(0, (it["when"].date() - today).days)
+        recent = split_by_week(data["recent"], today)
+        for it in recent:
+            it["_d"] = max(0, (today - it["when"].date()).days)
         up = grouped(data["upcoming"], lambda it: (it["when"].date(), day_label(it["when"].date(), today)))
-        rec = grouped(data["recent"], lambda it: ago_bucket(it["when"].date(), today))
-        up_html = "".join(
-            f'<section class="day"><h2>{e(label)}<small>{d.strftime("%-d %b")}</small></h2>'
-            f'<div class="rows">{"".join(tile(i, mode="up") for i in its)}</div></section>'
-            for (d, label), its in up.items()) or '<p class="empty">Nothing scheduled.</p>'
-        rec_html = "".join(
-            f'<section class="day"><h2>{e(label)}</h2>'
-            f'<div class="grid">{"".join(tile(i, mode="rec") for i in its)}</div></section>'
-            for label, its in rec.items()) or '<p class="empty">Nothing new yet.</p>'
-        n_up, n_rec = len(data["upcoming"]), len(data["recent"])
+        rec = grouped(recent, lambda it: ago_bucket(it["when"].date(), today))
+
+        def section(h2, cls, its, mode):
+            hide = "" if any(i["_d"] < days for i in its) else " hidden"
+            return (f'<section class="day"{hide}><h2>{h2}</h2>'
+                    f'<div class="{cls}">{"".join(tile(i, mode=mode, days=days) for i in its)}</div></section>')
+
+        def small(d):
+            return f'<small>{d.strftime("%-d %b")}</small>' if (d - today).days < 14 else ""
+
+        up_html = "".join(section(f"{e(label)}{small(d)}", "rows", its, "up") for (d, label), its in up.items())
+        rec_html = "".join(section(e(label), "grid", its, "rec") for label, its in rec.items())
+        n_up = sum(i["_d"] < days for i in data["upcoming"])
+        n_rec = sum(i["_d"] < days for i in recent)
+        wlabel = f'<span class="wlabel">{days}</span>'
+        none_up = f'<p class="empty none"{"" if not n_up else " hidden"}>Nothing scheduled in the next {wlabel} days.</p>'
+        none_rec = f'<p class="empty none"{"" if not n_rec else " hidden"}>Nothing new in the last {wlabel} days.</p>'
+        win = "".join(f'<button type="button" data-w="{w}" aria-pressed="{str(w == days).lower()}">{w} days</button>'
+                      for w in WINDOWS)
         body = f"""
 <input type="radio" name="tab" id="t-rec" checked><input type="radio" name="tab" id="t-up">
 <input type="radio" name="f" id="f-all" checked><input type="radio" name="f" id="f-movie"><input type="radio" name="f" id="f-tv">
 <nav>
-  <div class="tabs"><label for="t-rec">Just added <span>{n_rec}</span></label><label for="t-up">Coming up <span>{n_up}</span></label></div>
-  <div class="filters"><label for="f-all">All</label><label for="f-movie">Movies</label><label for="f-tv">TV</label></div>
+  <div class="tabs"><label for="t-rec">Just added <span data-count="rec">{n_rec}</span></label><label for="t-up">Coming up <span data-count="up">{n_up}</span></label></div>
+  <div class="controls">
+    <div class="win seg" role="group" aria-label="Time window">{win}</div>
+    <div class="filters seg"><label for="f-all">All</label><label for="f-movie">Movies</label><label for="f-tv">TV</label></div>
+  </div>
 </nav>
-<div class="pane rec">{rec_html}</div>
-<div class="pane up">{up_html}<p class="note">These are release dates. New episodes and movies usually arrive here within a few hours of release.</p></div>"""
+<div class="pane rec">{rec_html}{none_rec}</div>
+<div class="pane up">{up_html}{none_up}<p class="note">These are release dates. New episodes and movies usually arrive here within a few hours of release.</p></div>"""
         updated = data["updated"].strftime("%-I:%M %p, %a %-d %b").replace("AM", "am").replace("PM", "pm")
     req = f'<a class="req" href="{e(REQUEST_URL)}">Request something →</a>' if REQUEST_URL else ""
     return f"""<!doctype html>
@@ -615,9 +679,14 @@ CSS_PATH = Path(__file__).parent / "style.css"
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        path = self.path.split("?")[0]
+        path, _, query = self.path.partition("?")
         if path == "/":
-            self.send(200, "text/html; charset=utf-8", render(STATE["data"]).encode())
+            try:
+                days = int(urllib.parse.parse_qs(query).get("days", [DEFAULT_DAYS])[0])
+            except ValueError:
+                days = DEFAULT_DAYS
+            days = days if days in WINDOWS else DEFAULT_DAYS
+            self.send(200, "text/html; charset=utf-8", render(STATE["data"], days).encode())
         elif path == "/style.css":
             self.send(200, "text/css", CSS_PATH.read_bytes())
         elif path == "/healthz":

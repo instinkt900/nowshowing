@@ -4,9 +4,9 @@ A small read-only web page for the people who use your media server: what was **
 **coming up**, built from Sonarr and Radarr. No login, no database, no accounts. Click a tile for the plot,
 episode details and links to IMDb, Letterboxd, TVDB and TMDB.
 
-- **Just added** (last 14 days): imports from Sonarr/Radarr history. Episodes are grouped per show, quality
+- **Just added** (last 7, 14 or 30 days, the viewer picks): imports from Sonarr/Radarr history. Episodes are grouped per show, quality
   upgrades of things you already had are left out, and a movie in two Radarrs (e.g. HD and 4K) shows once.
-- **Coming up** (next 14 days): monitored episodes that have not downloaded yet, and movies on their
+- **Coming up** (next 7, 14 or 30 days): monitored episodes that have not downloaded yet, and movies on their
   digital or disc release date.
 
 - **Letterboxd** (optional): set `LETTERBOXD_USER` and titles you have rated show your stars. Click for the
@@ -38,7 +38,8 @@ All settings are environment variables. See `.env.example`.
 | `SONARR_URL`, `SONARR_KEY` | — | One pair per instance. Extra instances: `SONARR_<NAME>_URL/_KEY` |
 | `RADARR_URL`, `RADARR_KEY` | — | Same, `RADARR_<NAME>_URL/_KEY` |
 | `TZ` | `Australia/Melbourne` | Display timezone |
-| `DAYS_AHEAD`, `DAYS_BACK` | `14`, `14` | Window for each tab |
+| `WINDOWS` | `7,14,30` | Time windows the viewer can pick. The server fetches the largest; switching is instant |
+| `DEFAULT_DAYS` | `14` | Window the page opens with. `?days=30` in the URL overrides it, and the browser remembers the last choice |
 | `REFRESH_MINUTES` | `15` | Poll interval |
 | `SITE_TITLE` | `Now Showing` | |
 | `REQUEST_URL` | — | Adds a "Request something" link (e.g. to Seerr) |
