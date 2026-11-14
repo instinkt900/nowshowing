@@ -1,7 +1,7 @@
 # Stdlib-only app: no pip install. tzdata lets zoneinfo resolve TZ.
 FROM python:3.12-slim-bookworm
 
-ENV PYTHONUNBUFFERED=1 PORT=8077
+ENV PYTHONUNBUFFERED=1 PORT=8077 DATA_DIR=/data
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tzdata \
@@ -9,6 +9,9 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY app.py style.css ./
+# Letterboxd cache. A new named volume copies this ownership, so nobody can write to it.
+RUN mkdir /data && chown nobody /data
+VOLUME ["/data"]
 
 USER nobody
 EXPOSE 8077

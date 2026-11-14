@@ -13,5 +13,10 @@ services:
     ports:
       - "${NOWSHOWING_PORT:-8077}:8077"
     # SONARR_URL/_KEY, RADARR_URL/_KEY (and RADARR_<NAME>_URL/_KEY for more instances),
-    # TZ, SITE_TITLE, REQUEST_URL, DAYS_AHEAD, DAYS_BACK. See README.
+    # LETTERBOXD_USER, REVIEWER_NAME, TZ, SITE_TITLE, REQUEST_URL, DAYS_AHEAD, DAYS_BACK. See README.
     env_file: .env
+    volumes:
+      - nowshowing-data:/data
+
+volumes:
+  nowshowing-data:

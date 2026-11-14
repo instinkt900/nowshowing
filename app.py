@@ -45,6 +45,10 @@ REFRESH_MINUTES = int(os.environ.get("REFRESH_MINUTES", "15"))
 PORT = int(os.environ.get("PORT", "8077"))
 TITLE = os.environ.get("SITE_TITLE", "Now Showing")
 REQUEST_URL = os.environ.get("REQUEST_URL", "")  # e.g. Seerr link shown in the header
+LETTERBOXD_USER = os.environ.get("LETTERBOXD_USER", "")  # show this member's ratings and reviews
+REVIEWER_NAME = os.environ.get("REVIEWER_NAME", "")  # how the reviewer is named on the page
+DATA_DIR = Path(os.environ.get("DATA_DIR", "."))  # keeps Letterboxd entries that have left the feed
+USER_AGENT = "nowshowing/1.0 (+https://github.com/instinkt900/nowshowing)"
 
 
 def instances(prefix):
@@ -103,7 +107,8 @@ def movie_info(m):
         links.append(("Letterboxd", f"https://letterboxd.com/tmdb/{m['tmdbId']}/"))
         links.append(("TMDB", f"https://www.themoviedb.org/movie/{m['tmdbId']}"))
     return {
-        "kind": "movie", "title": m.get("title"), "year": m.get("year"), "poster": poster(m.get("images")),
+        "kind": "movie", "tmdb": m.get("tmdbId"),
+        "title": m.get("title"), "year": m.get("year"), "poster": poster(m.get("images")),
         "overview": m.get("overview"), "runtime": m.get("runtime"), "genres": m.get("genres") or [],
         "cert": m.get("certification"), "links": links,
     }
@@ -118,7 +123,8 @@ def series_info(s):
     if s.get("tmdbId"):
         links.append(("TMDB", f"https://www.themoviedb.org/tv/{s['tmdbId']}"))
     return {
-        "kind": "tv", "title": s.get("title"), "year": s.get("year"), "poster": poster(s.get("images")),
+        "kind": "tv", "tmdb": s.get("tmdbId"),
+        "title": s.get("title"), "year": s.get("year"), "poster": poster(s.get("images")),
         "overview": s.get("overview"), "network": s.get("network"), "genres": s.get("genres") or [],
         "cert": s.get("certification"), "status": s.get("status"), "links": links,
     }
@@ -128,6 +134,84 @@ def episode(e, when=None):
     return {"season": e["seasonNumber"], "ep": e["episodeNumber"], "title": e.get("title"),
             "overview": e.get("overview"), "when": when or parse_dt(e.get("airDateUtc")),
             "finale": e.get("finaleType")}
+
+
+# --- letterboxd -------------------------------------------------------------
+# The member RSS feed lists only the latest ~50 diary entries, so every entry seen is kept in
+# DATA_DIR/letterboxd.json. A film reviewed long before it reaches the library still matches.
+
+import re
+import xml.etree.ElementTree as ET
+
+LB_NS = {"lb": "https://letterboxd.com", "tmdb": "https://themoviedb.org", "dc": "http://purl.org/dc/elements/1.1/"}
+LB_CACHE = DATA_DIR / "letterboxd.json"
+
+
+def review_paragraphs(desc):
+    """Feed description HTML -> (plain-text paragraphs, has_spoilers). Drops the poster and stock lines."""
+    spoilers = "may contain spoilers" in desc.lower()
+    paras = []
+    for p in re.split(r"</p>|<br\s*/?>", desc):
+        if "<img" in p:
+            continue
+        t = html.unescape(re.sub(r"<[^>]+>", "", p)).strip()
+        if not t or re.match(r"^(Watched on |This review may contain spoilers)", t):
+            continue
+        paras.append(t)
+    return paras, spoilers
+
+
+def parse_feed(xml_text):
+    out = {}
+    for it in ET.fromstring(xml_text).iterfind("channel/item"):
+        f = lambda tag: (it.findtext(tag, namespaces=LB_NS) or "").strip()
+        movie, tv = f("tmdb:movieId"), f("tmdb:tvId")
+        if not (movie or tv) or not f("guid"):
+            continue
+        paras, spoilers = review_paragraphs(f("description"))
+        out[f("guid")] = {
+            "kind": "movie" if movie else "tv", "tmdb": int(movie or tv),
+            "rating": float(f("lb:memberRating")) if f("lb:memberRating") else None,
+            "liked": f("lb:memberLike") == "Yes", "rewatch": f("lb:rewatch") == "Yes",
+            "watched": f("lb:watchedDate"), "link": f("link"), "review": paras, "spoilers": spoilers,
+            "member": f("dc:creator"),
+        }
+    return out
+
+
+def load_letterboxd():
+    """-> {(kind, tmdb_id): entry}, newest watch first wins; review text from the newest entry that has some."""
+    if not LETTERBOXD_USER:
+        return {}
+    try:
+        seen = json.loads(LB_CACHE.read_text())
+    except (OSError, ValueError):
+        seen = {}
+    try:
+        req = urllib.request.Request(f"https://letterboxd.com/{urllib.parse.quote(LETTERBOXD_USER)}/rss/",
+                                     headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            fresh = parse_feed(r.read().decode("utf-8"))
+        if any(k not in seen or seen[k] != v for k, v in fresh.items()):
+            seen.update(fresh)
+            tmp = LB_CACHE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(seen, indent=1))
+            tmp.replace(LB_CACHE)
+    except Exception as ex:  # the page still works without reviews; use what we have
+        print(f"letterboxd: {ex}", file=sys.stderr, flush=True)
+
+    by_film = {}
+    for ent in sorted(seen.values(), key=lambda x: x["watched"], reverse=True):
+        k = (ent["kind"], ent["tmdb"])
+        if k not in by_film:
+            by_film[k] = dict(ent)
+        elif not by_film[k]["review"] and ent["review"]:
+            by_film[k].update(review=ent["review"], spoilers=ent["spoilers"], link=ent["link"])
+    return by_film
+
+
+def stars(r):
+    return "★" * int(r) + ("½" if r % 1 else "")
 
 
 # --- data gathering ---------------------------------------------------------
@@ -232,6 +316,9 @@ def gather():
             del mov_recent[tmdb]
 
     pool.shutdown()
+    reviews = load_letterboxd()
+    for it in [*upcoming, *tv_recent.values(), *mov_recent.values()]:
+        it["lb"] = reviews.get((it["kind"], it.get("tmdb")))
     upcoming.sort(key=lambda x: x["when"])
     recent = sorted([*tv_recent.values(), *mov_recent.values()], key=lambda x: x["when"], reverse=True)
     return {"upcoming": upcoming, "recent": recent, "updated": now}
@@ -368,15 +455,46 @@ def detail(it, mode):
             body += f'<h4>Episodes</h4><ul class="eplist">{items}{more}</ul>'
 
     links = "".join(f'<a href="{e(u)}" target="_blank" rel="noopener">{e(n)} ↗</a>' for n, u in it["links"])
+    lb, tabs = it.get("lb"), ""
+    if lb:
+        who = e(REVIEWER_NAME or lb.get("member") or "Reviewer")
+        if lb["review"]:
+            tabs = (f'<div class="dtabs" role="tablist"><button role="tab" class="on" data-p="info">Details</button>'
+                    f'<button role="tab" data-p="review">{who}\'s review {rating_html(lb)}</button></div>')
+            body = f'<div class="panel on" data-p="info">{body}</div><div class="panel" data-p="review">{review_html(lb, who)}</div>'
+        elif lb.get("rating") or lb.get("liked"):
+            body = (f'<p class="lbline">{who} rated it {rating_html(lb)} on '
+                    f'<a href="{e(lb["link"])}" target="_blank" rel="noopener">Letterboxd ↗</a></p>') + body
     return f"""<div class="dposter">{img_html(it)}</div>
 <div class="dmain">
   <h3>{e(it["title"] or "?")}</h3>
   <div class="facts">{" · ".join(e(f) for f in facts)}</div>
   <div class="dbadges">{badge_html(badges_for(it, mode))}</div>
   <div class="status">{e(status)}</div>
+  {tabs}
   {body}
   <div class="links">{links}</div>
 </div>"""
+
+
+def rating_html(lb, cls="stars"):
+    if not lb:
+        return ""
+    st = stars(lb["rating"]) if lb.get("rating") else ""
+    heart = '<span class="heart" title="Liked">♥</span>' if lb.get("liked") else ""
+    return f'<span class="{cls}" title="{lb["rating"] or ""} / 5">{st}{heart}</span>' if st or heart else ""
+
+
+def review_html(lb, who):
+    when = ""
+    if lb.get("watched"):
+        when = datetime.fromisoformat(lb["watched"]).strftime("%-d %B %Y")
+        when = f'{"Rewatched" if lb.get("rewatch") else "Watched"} {when}'
+    text = "".join(f"<p>{e(p)}</p>" for p in lb["review"])
+    if lb.get("spoilers"):
+        text = f'<details class="spoil"><summary>This review may contain spoilers. Show it</summary>{text}</details>'
+    return (f'<div class="rhead">{rating_html(lb)}<span>{e(when)}</span></div><div class="rtext">{text}</div>'
+            f'<a class="lblink" href="{e(lb["link"])}" target="_blank" rel="noopener">Read on Letterboxd ↗</a>')
 
 
 def tile(it, *, mode):
@@ -400,11 +518,13 @@ def tile(it, *, mode):
         b = badges_for(it, mode)
         if b:
             ept = f'<div class="rbadges">{badge_html(b)}</div>' + ept
+    if mode == "up" and it.get("lb"):
+        ept = rating_html(it["lb"], "stars inline") + ept
     cls = f"tile {kind} {'row' if mode == 'up' else 'card'}"
     chip = "Movie" if kind == "movie" else "TV"
     return f"""<article class="{cls}" tabindex="0" role="button" aria-haspopup="dialog">
   <div class="poster"><div class="ph">{e(title)}</div>{img_html(it)}<div class="badges">{badge_html(badges_for(it, mode))}</div>
-    <span class="kind-chip">{chip}</span></div>
+    {rating_html(it.get("lb"), "stars onposter") if mode != "up" else ""}<span class="kind-chip">{chip}</span></div>
   <div class="cap"><h3>{e(title)}</h3><div class="sub">{e(sub)}</div>{ept}<div class="meta">{e(meta)}</div></div>
   <template>{detail(it, mode)}</template>
 </article>"""
@@ -423,7 +543,11 @@ function open(t) { body.replaceChildren(t.querySelector('template').content.clon
 document.addEventListener('click', ev => { const t = ev.target.closest('.tile'); if (t) open(t); });
 document.addEventListener('keydown', ev => { const t = ev.target.closest && ev.target.closest('.tile');
   if (t && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); open(t); } });
-dlg.addEventListener('click', ev => { if (ev.target === dlg || ev.target.closest('.close')) dlg.close(); });
+dlg.addEventListener('click', ev => {
+  if (ev.target === dlg || ev.target.closest('.close')) return dlg.close();
+  const b = ev.target.closest('.dtabs button'); if (!b) return;
+  dlg.querySelectorAll('.dtabs button, .panel').forEach(x => x.classList.toggle('on', x.dataset.p === b.dataset.p));
+});
 """
 
 

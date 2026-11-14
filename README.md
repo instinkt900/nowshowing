@@ -9,6 +9,9 @@ episode details and links to IMDb, Letterboxd, TVDB and TMDB.
 - **Coming up** (next 14 days): monitored episodes that have not downloaded yet, and movies on their
   digital or disc release date.
 
+- **Letterboxd** (optional): set `LETTERBOXD_USER` and titles you have rated show your stars. Click for the
+  review. Matching is by TMDB id, so it works for movies and for shows logged on Letterboxd.
+
 The server polls the *arrs every 15 minutes and serves the page from memory. API keys stay on the server;
 posters load from TMDB/TVDB. Python standard library only.
 
@@ -39,6 +42,9 @@ All settings are environment variables. See `.env.example`.
 | `REFRESH_MINUTES` | `15` | Poll interval |
 | `SITE_TITLE` | `Now Showing` | |
 | `REQUEST_URL` | — | Adds a "Request something" link (e.g. to Seerr) |
+| `LETTERBOXD_USER` | — | Letterboxd member whose ratings and reviews to show |
+| `REVIEWER_NAME` | feed name | Name shown on reviews ("Sam's review") |
+| `DATA_DIR` | `.` (`/data` in Docker) | Where Letterboxd entries are kept. The feed lists only the latest 50, so the app keeps every entry it sees |
 | `PORT` | `8077` | Listen port |
 
 `/healthz` returns 200 after a successful refresh, 503 otherwise.
